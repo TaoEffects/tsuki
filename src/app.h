@@ -70,6 +70,7 @@ public:
     float drawerDragAccum = 0.0f;
 
     float heroAnim = 1.0f;
+    int prevHeroAppIdx = -1;
     float viewFade = 1.0f;
     float listFade = 1.0f;
     float settingPopAnim = 1.0f;

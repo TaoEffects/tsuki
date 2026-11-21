@@ -173,6 +173,7 @@ void App::shutdown() {
 }
 
 void App::rebuildVisible(const std::string &keepPath) {
+    prevHeroAppIdx = -1;
     visibleIdx.clear();
     std::string q = toLowerUtf8(searchFilter);
 
@@ -221,6 +222,9 @@ void App::selectHomeIndex(int newVis, bool playSfx) {
     if (visibleIdx.empty()) return;
     newVis = std::clamp(newVis, 0, static_cast<int>(visibleIdx.size()) - 1);
     if (newVis != selectedVis) {
+        if (selectedVis >= 0 && selectedVis < static_cast<int>(visibleIdx.size())) {
+            prevHeroAppIdx = visibleIdx[static_cast<size_t>(selectedVis)];
+        }
         selectedVis = newVis;
         drawerVis = newVis;
         heroAnim = 0.0f;
@@ -570,9 +574,13 @@ void App::update(const plat::Input &in, float dt) {
                 openDetail(visibleIdx[static_cast<size_t>(selectedVis)]);
                 return;
             }
-            if (gfx::Rect{1436, by + 5, 378, 58}.contains(in.mx, in.my)) { setTab(Tab::Ftp); return; }
+            if (!visibleIdx.empty() && gfx::Rect{1524, kHeroY + 60.0f, 280, 280}.contains(in.mx, in.my)) {
+                openDetail(visibleIdx[static_cast<size_t>(selectedVis)]);
+                return;
+            }
 
-            // Section header buttons (y = 564..620)
+            // Section header buttons (y = 564..620): FTP pill + Favorites (ZL) + See all (ZR)
+            if (gfx::Rect{958, 564, 382, 56}.contains(in.mx, in.my)) { setTab(Tab::Ftp); return; }
             if (gfx::Rect{1356, 564, 244, 56}.contains(in.mx, in.my)) { toggleFavOnly(); return; }
             if (gfx::Rect{1616, 564, 248, 56}.contains(in.mx, in.my)) { setTab(Tab::Apps); return; }
         }
@@ -581,8 +589,10 @@ void App::update(const plat::Input &in, float dt) {
             auto &a = allApps[static_cast<size_t>(visibleIdx[static_cast<size_t>(i)])];
             float cx = kRailPadX + i * kCardStep - railScrollX;
             bool hov = in.pointerVisible && gfx::Rect{cx, kRailY - 14.0f, kCardW, kCardH + 14.0f}.contains(in.mx, in.my);
-            a.focusAnim += (((i == selectedVis) ? 1.0f : 0.0f) - a.focusAnim) * std::min(1.0f, dt * 13.0f);
-            a.hoverAnim += ((hov ? 1.0f : 0.0f) - a.hoverAnim) * std::min(1.0f, dt * 15.0f);
+            float fTarget = (i == selectedVis) ? 1.0f : 0.0f;
+            float fRate = (fTarget > a.focusAnim) ? 11.5f : 6.2f;  // snappy focus-in, silky smooth fade-out!
+            a.focusAnim += (fTarget - a.focusAnim) * std::min(1.0f, dt * fRate);
+            a.hoverAnim += ((hov ? 1.0f : 0.0f) - a.hoverAnim) * std::min(1.0f, dt * 10.0f);
         }
     } else if (tab == Tab::Apps) {
         int count = static_cast<int>(visibleIdx.size());
@@ -691,8 +701,10 @@ void App::update(const plat::Input &in, float dt) {
             float cx = kDrawerX0 + col * kDrawerStepX;
             float cy = kDrawerY0 + row * kDrawerStepY - drawerScrollY;
             bool hov = in.pointerVisible && gfx::Rect{cx, cy, kDrawerCellW, kDrawerCellH}.contains(in.mx, in.my);
-            a.focusAnim += (((i == drawerVis) ? 1.0f : 0.0f) - a.focusAnim) * std::min(1.0f, dt * 13.0f);
-            a.hoverAnim += ((hov ? 1.0f : 0.0f) - a.hoverAnim) * std::min(1.0f, dt * 15.0f);
+            float fTarget = (i == drawerVis) ? 1.0f : 0.0f;
+            float fRate = (fTarget > a.focusAnim) ? 11.5f : 6.2f;
+            a.focusAnim += (fTarget - a.focusAnim) * std::min(1.0f, dt * fRate);
+            a.hoverAnim += ((hov ? 1.0f : 0.0f) - a.hoverAnim) * std::min(1.0f, dt * 10.0f);
         }
     } else if (tab == Tab::Files) {
         fileBrowser.update(
@@ -896,40 +908,58 @@ void App::renderHomeView(gfx::Renderer &r, const plat::Input &in) {
     const auto &sel = allApps[static_cast<size_t>(visibleIdx[static_cast<size_t>(selectedVis)])];
     const i18n::Key sortKeys[3] = {i18n::Key::SortRecent, i18n::Key::SortAZ, i18n::Key::SortSize};
 
-    // 1. UNIFIED HERO BANNER
+    // 1. UNIFIED HERO BANNER (100% crisp rounded 32px corners — zero square overlays or seams!)
     float heroX = kHeroX + slideX;
     r.drawShadow(heroX, kHeroY + 14, kHeroW, kHeroH, 38, 32, gfx::rgba(0, 0, 0, 0.44f));
-    r.fillRoundedRect(heroX, kHeroY, kHeroW, kHeroH, 32.0f, th.cardFill);
+    r.drawSoftCard(heroX, kHeroY, kHeroW, kHeroH, 32.0f, th.cardFill, gfx::rgba(255, 224, 238, 0.08f));
 
-    r.pushClip(heroX, kHeroY, kHeroW, kHeroH);
-    if (sel.icon.id) {
-        float hEase = easeOutCubic(heroAnim);
-        float imgScale = 1.0f + (1.0f - hEase) * 0.04f;
-        float iw = 600.0f * imgScale;
-        r.drawRoundedTexture(sel.icon, heroX + kHeroW - 580.0f - (iw - 600.0f) * 0.5f,
-                             kHeroY - 96.0f - (iw - 600.0f) * 0.5f, iw, iw, 0.0f,
-                             gfx::rgba(255, 255, 255, 0.42f * hEase), 0.0f);
+    // Clean, unobstructed 280x280 rounded app icon on the right (60px symmetric padding top/bottom/right)
+    float hEase = easeOutCubic(heroAnim);
+    float iconSz = 280.0f;
+    float iconX = heroX + kHeroW - 60.0f - iconSz;
+    float iconY = kHeroY + (kHeroH - iconSz) * 0.5f;
+    float iconCx = iconX + iconSz * 0.5f;
+    float iconCy = iconY + iconSz * 0.5f;
+
+    // Soft ambient halo centered behind icon (radius 195px fits completely inside 400px-tall Hero!)
+    r.drawGlowOrb(iconCx, iconCy, 195.0f, 195.0f, gfx::withAlpha(curGlowA, 0.30f));
+
+    auto drawHeroIcon = [&](const nro::AppEntry &app, float alpha, float scale) {
+        if (alpha <= 0.005f) return;
+        float sz = iconSz * scale;
+        float dx = iconCx - sz * 0.5f;
+        float dy = iconCy - sz * 0.5f;
+        r.pushAlpha(alpha);
+        if (app.icon.id) {
+            r.drawRoundedTexture(app.icon, dx, dy, sz, sz, 38.0f, {1, 1, 1, 1}, 0.08f);
+        } else {
+            r.drawGradientPill(dx, dy, sz, sz, 38.0f, app.colorA, app.colorB);
+            char mono[2] = {static_cast<char>(std::toupper(static_cast<unsigned char>(app.name.empty() ? 'H' : app.name[0]))), 0};
+            r.drawTextBoxed(gfx::Font::Semi, 112.0f, iconCx, dy, sz, mono, gfx::hex(0xFFFFFF), gfx::Align::Center);
+        }
+        r.popAlpha();
+    };
+
+    // Single steady drop shadow + smooth cross-fade from previous app icon to newly selected app icon!
+    r.drawShadow(iconX, iconY + 12.0f, iconSz, iconSz, 30.0f, 38.0f, gfx::rgba(0, 0, 0, 0.48f));
+    if (prevHeroAppIdx >= 0 && prevHeroAppIdx < static_cast<int>(allApps.size()) &&
+        prevHeroAppIdx != visibleIdx[static_cast<size_t>(selectedVis)] && hEase < 0.995f) {
+        drawHeroIcon(allApps[static_cast<size_t>(prevHeroAppIdx)], 1.0f - hEase, 1.0f - 0.03f * hEase);
     }
-    r.fillRectGradH(heroX, kHeroY, kHeroW * 0.72f, kHeroH,
-                    gfx::withAlpha(th.bgTop, 0.94f), gfx::withAlpha(th.bgTop, 0.12f));
-    r.fillRectGradV(heroX, kHeroY + kHeroH * 0.55f, kHeroW, kHeroH * 0.45f,
-                    gfx::rgba(0, 0, 0, 0.0f), gfx::rgba(0, 0, 0, 0.36f));
-    r.drawGlowOrb(heroX + kHeroW - 220.0f, kHeroY + kHeroH * 0.45f, 440.0f, 340.0f,
-                  gfx::withAlpha(curGlowA, 0.22f));
-    r.popClip();
+    drawHeroIcon(sel, hEase, 0.97f + 0.03f * hEase);
 
     float hx = heroX + 56.0f;
     std::string kicker = "v" + sel.version + "  •  " + nro::formatBytes(sel.fileSize, cfg.lang) +
                          (sel.author.empty() ? "" : ("  •  " + sel.author));
-    r.drawTextCleanReveal(gfx::Font::Semi, 22.0f, hx, kHeroY + 48.0f, 1080.0f,
+    r.drawTextCleanReveal(gfx::Font::Semi, 22.0f, hx, kHeroY + 48.0f, 1320.0f,
                           fmt(kicker).c_str(), th.accent, std::clamp(heroAnim * 1.3f, 0.0f, 1.0f));
 
     r.drawTextCleanReveal(cfg.serifTitles ? gfx::Font::Serif : gfx::Font::Semi,
                           cfg.serifTitles ? 100.0f : 76.0f,
-                          hx, cfg.serifTitles ? (kHeroY + 88.0f) : (kHeroY + 100.0f), 1120.0f,
+                          hx, cfg.serifTitles ? (kHeroY + 88.0f) : (kHeroY + 100.0f), 1320.0f,
                           fmt(sel.name).c_str(), gfx::hex(0xFFFFFF, 0.98f), heroAnim);
 
-    r.drawTextCleanReveal(gfx::Font::Sans, 24.0f, hx, kHeroY + 210.0f, 1060.0f,
+    r.drawTextCleanReveal(gfx::Font::Sans, 24.0f, hx, kHeroY + 210.0f, 1320.0f,
                           sel.displayPath.c_str(), gfx::hex(0xFFFFFF, 0.62f),
                           std::clamp((heroAnim - 0.10f) * 1.3f, 0.0f, 1.0f));
 
@@ -966,19 +996,7 @@ void App::renderHomeView(gfx::Renderer &r, const plat::Input &in) {
     r.drawTextBoxed(gfx::Font::Semi, 22.0f, 1001.0f + slideX, by, 68.0f, detLbl.c_str(),
                     gfx::hex(0xFFFFFF, 0.88f), gfx::Align::Center);
 
-    // Compact FTP Status Pill bottom-right of Hero with (-) badge
-    std::string ip = status.ipAddress.empty() ? "10.77.0.4" : status.ipAddress;
-    std::string ftpTxt = ftpSrv.isRunning()
-                             ? ("ftp://" + ip + ":" + std::to_string(cfg.ftpPort()) + " (-)")
-                             : (fmtKey(i18n::Key::FtpStandby) + " (-)");
-    bool hFtp = in.pointerVisible && gfx::Rect{1436, by + 5, 378, 58}.contains(in.mx, in.my);
-    r.drawSoftCard(1436 + slideX, by + 5, 378, 58, 29.0f, gfx::rgba(20, 10, 15, hFtp ? 0.72f : 0.56f), gfx::rgba(255, 224, 238, 0.12f));
-    float pulse = ftpSrv.isRunning() ? (0.65f + 0.35f * std::sin(static_cast<float>(timeSec) * 3.8f)) : 0.30f;
-    r.fillCircle(1466.0f + slideX, by + 34.0f, 6.0f, ftpSrv.isRunning() ? gfx::hex(0x6EE7B7, pulse) : gfx::hex(0xFFFFFF, 0.30f));
-    r.drawTextBoxed(gfx::Font::Semi, 21.0f, 1486.0f + slideX, by + 5.0f, 58.0f, ftpTxt.c_str(),
-                    gfx::hex(0xFFFFFF, 0.90f), gfx::Align::Left);
-
-    // 2. Section Header Row with explicit (ZL) and (ZR) gamepad labels!
+    // 2. Section Header Row: Library title on left · FTP (-) · Favorites (ZL) · See all (ZR) on right!
     float secY = 564.0f;
     std::string libTitle = fmtKey(i18n::Key::TabApps);
     if (cfg.lang == static_cast<int>(i18n::Lang::Fr)) libTitle = fmt("Bibliothèque");
@@ -994,6 +1012,19 @@ void App::renderHomeView(gfx::Renderer &r, const plat::Input &in) {
     float titleEnd = kMarginX + slideX + r.measureText(gfx::Font::Semi, 36.0f, libTitle.c_str()) + 20.0f;
     r.drawTextBoxed(gfx::Font::Sans, 22.0f, titleEnd, secY + 4.0f, 52.0f, cntStr,
                     gfx::hex(0xFFFFFF, 0.50f), gfx::Align::Left);
+
+    // Compact FTP Status Pill cleanly placed in Section Header Row (NEVER overlaps Hero icon!)
+    std::string ip = status.ipAddress.empty() ? "10.77.0.4" : status.ipAddress;
+    std::string ftpTxt = ftpSrv.isRunning()
+                             ? ("ftp://" + ip + ":" + std::to_string(cfg.ftpPort()) + " (-)")
+                             : (fmtKey(i18n::Key::FtpStandby) + " (-)");
+    bool hFtp = in.pointerVisible && gfx::Rect{958, secY, 382, 56}.contains(in.mx, in.my);
+    r.drawSoftCard(958 + slideX, secY, 382, 56, 28.0f,
+                   gfx::rgba(255, 224, 238, hFtp ? 0.14f : 0.08f), gfx::rgba(255, 224, 238, 0.10f));
+    float pulse = ftpSrv.isRunning() ? (0.65f + 0.35f * std::sin(static_cast<float>(timeSec) * 3.8f)) : 0.30f;
+    r.fillCircle(988.0f + slideX, secY + 28.0f, 5.5f, ftpSrv.isRunning() ? gfx::hex(0x6EE7B7, pulse) : gfx::hex(0xFFFFFF, 0.30f));
+    r.drawTextBoxed(gfx::Font::Semi, 21.0f, 1008.0f + slideX, secY, 56.0f, ftpTxt.c_str(),
+                    gfx::hex(0xFFFFFF, 0.90f), gfx::Align::Left);
 
     // Favorites filter pill — explicitly mapped to (ZL)!
     r.drawSoftCard(1356 + slideX, secY, 244, 56, 28.0f,
@@ -1020,18 +1051,21 @@ void App::renderHomeView(gfx::Renderer &r, const plat::Input &in) {
         float cx = kRailPadX + slideX + i * kCardStep - railScrollX;
         if (cx + kCardW < -80.0f || cx > plat::kW + 80.0f) continue;
 
-        float lift = a.focusAnim * 14.0f + a.hoverAnim * 5.0f;
+        float fa = std::clamp(a.focusAnim, 0.0f, 1.0f);
+        float lift = fa * 14.0f + a.hoverAnim * 5.0f;
         float cy = kRailY - lift + listOffY;
 
-        if (a.focusAnim > 0.02f) {
+        // Smooth cross-faded dark shadow <-> accent glow (ZERO sudden pop when unfocusing!)
+        if (fa < 0.99f) {
+            r.drawShadow(cx, cy + 10, kCardW, kCardH, 18.0f, 26.0f, gfx::rgba(0, 0, 0, 0.28f * (1.0f - fa)));
+        }
+        if (fa > 0.005f) {
             r.drawShadow(cx + 8, cy + 12, kCardW - 16, kCardH - 8, 36.0f, 28.0f,
-                         gfx::withAlpha(th.accent, 0.36f * a.focusAnim));
-        } else {
-            r.drawShadow(cx, cy + 10, kCardW, kCardH, 18.0f, 26.0f, gfx::rgba(0, 0, 0, 0.28f));
+                         gfx::withAlpha(th.accent, 0.36f * fa));
         }
 
-        gfx::Color cFill = gfx::lerpColor(gfx::rgba(255, 220, 236, 0.05f), gfx::rgba(255, 220, 236, 0.13f), a.focusAnim);
-        gfx::Color cRim = (a.focusAnim > 0.04f) ? gfx::withAlpha(th.accent, 0.62f * a.focusAnim) : gfx::rgba(255, 220, 236, 0.04f);
+        gfx::Color cFill = gfx::lerpColor(gfx::rgba(255, 220, 236, 0.05f), gfx::rgba(255, 220, 236, 0.13f), fa);
+        gfx::Color cRim = gfx::lerpColor(gfx::rgba(255, 220, 236, 0.04f), gfx::withAlpha(th.accent, 0.62f), fa);
         r.drawSoftCard(cx, cy, kCardW, kCardH, 28.0f, cFill, cRim);
 
         float isz = 214.0f;
@@ -1051,10 +1085,10 @@ void App::renderHomeView(gfx::Renderer &r, const plat::Input &in) {
         }
 
         r.drawTextClipped(gfx::Font::Semi, 26.0f, cx + kCardW * 0.5f, cy + 248.0f, kCardW - 32.0f,
-                          fmt(a.name).c_str(), gfx::hex(0xFFFFFF, a.focusAnim > 0.2f ? 0.99f : 0.88f), gfx::Align::Center);
+                          fmt(a.name).c_str(), gfx::hex(0xFFFFFF, 0.84f + 0.15f * fa), gfx::Align::Center);
         std::string sub = nro::formatBytes(a.fileSize, cfg.lang) + "  •  v" + a.version;
         r.drawTextClipped(gfx::Font::Sans, 19.0f, cx + kCardW * 0.5f, cy + 288.0f, kCardW - 32.0f,
-                          sub.c_str(), gfx::hex(0xFFFFFF, 0.52f), gfx::Align::Center);
+                          sub.c_str(), gfx::hex(0xFFFFFF, 0.48f + 0.14f * fa), gfx::Align::Center);
     }
     r.popAlpha();
 
@@ -1103,15 +1137,16 @@ void App::renderAppDrawerView(gfx::Renderer &r, const plat::Input &in) {
             if (cy + kDrawerCellH < kDrawerY0 - 60.0f || cy > plat::kH + 60.0f) continue;
 
             const auto &a = allApps[static_cast<size_t>(visibleIdx[static_cast<size_t>(i)])];
-            float lift = a.focusAnim * 10.0f + a.hoverAnim * 4.0f;
+            float fa = std::clamp(a.focusAnim, 0.0f, 1.0f);
+            float lift = fa * 10.0f + a.hoverAnim * 4.0f;
             float y0 = cy - lift;
 
-            if (a.focusAnim > 0.02f) {
+            if (fa > 0.005f) {
                 r.drawShadow(cx + 8, y0 + 10, kDrawerCellW - 16, kDrawerCellH - 8, 32.0f, 28.0f,
-                             gfx::withAlpha(th.accent, 0.36f * a.focusAnim));
+                             gfx::withAlpha(th.accent, 0.36f * fa));
             }
-            gfx::Color cFill = gfx::lerpColor(gfx::rgba(255, 220, 236, 0.045f), gfx::rgba(255, 220, 236, 0.13f), a.focusAnim);
-            gfx::Color cRim = (a.focusAnim > 0.04f) ? gfx::withAlpha(th.accent, 0.62f * a.focusAnim) : gfx::rgba(0, 0, 0, 0);
+            gfx::Color cFill = gfx::lerpColor(gfx::rgba(255, 220, 236, 0.045f), gfx::rgba(255, 220, 236, 0.13f), fa);
+            gfx::Color cRim = gfx::lerpColor(gfx::rgba(255, 220, 236, 0.0f), gfx::withAlpha(th.accent, 0.62f), fa);
             r.drawSoftCard(cx, y0, kDrawerCellW, kDrawerCellH, 28.0f, cFill, cRim);
 
             float isz = 208.0f;
