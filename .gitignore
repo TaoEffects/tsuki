@@ -1,0 +1,9 @@
+build-switch2/
+*.o
+*.elf
+*.nacp
+*.nro
+*.tmp
+*.bak
+.DS_Store
+._*
