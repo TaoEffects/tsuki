@@ -13,15 +13,17 @@
 
 ## Screenshots
 
-> *Screenshots coming soon — drop your 1080p captures into `docs/screenshots/` and embed them here!*
+<p align="center">
+  <img src="docs/screenshots/home.jpg" alt="Tsuki Home — Hero & Library" width="100%" />
+</p>
 
-<!--
-![Home](docs/screenshots/home.png)
-![Apps](docs/screenshots/apps.png)
-![Detail](docs/screenshots/detail.png)
-![Files](docs/screenshots/files.png)
-![Settings](docs/screenshots/settings.png)
--->
+| App Drawer | Liquid Glass App Detail |
+| :---: | :---: |
+| ![App Drawer](docs/screenshots/apps.jpg) | ![App Detail](docs/screenshots/detail.jpg) |
+
+| microSD File Manager | Built-in FTP Server |
+| :---: | :---: |
+| ![File Manager](docs/screenshots/files.jpg) | ![FTP Server](docs/screenshots/ftp.jpg) |
 
 ---
 
