@@ -25,6 +25,7 @@ public:
     int cursor = 0;
     float scrollY = 0.0f;
     float scrollVel = 0.0f;
+    bool manualScroll = false;
     bool dragging = false;
     float dragLastY = 0.0f;
     float dragAccum = 0.0f;

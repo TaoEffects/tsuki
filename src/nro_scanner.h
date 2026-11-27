@@ -45,6 +45,7 @@ struct Config {
     bool hideSelf = true;
     bool ftpAutoStart = true;
     bool soundsEnabled = true;
+    bool joyconMouse = false;
     std::unordered_set<std::string> favorites;
     std::unordered_map<std::string, uint64_t> launchTimes;
 

@@ -121,6 +121,7 @@ enum class Key : int {
     SetFtpAuto,
     SetFtpPort,
     SetSounds,
+    SetJoyconMouse,
     SetExit,
 
     // Setting values
@@ -200,7 +201,7 @@ inline const char *tr(int langIdx, Key k) {
             "Langue", "Thème (palette Yoru)", "Écran de démarrage", "Format de l'heure",
             "Pourcentage batterie", "Intensité du glow", "Style des grands titres",
             "Libellés en minuscules", "Masquer Tsuki / hbmenu", "Démarrer le FTP au lancement",
-            "Port du serveur FTP", "Sons d'interface", "Quitter Tsuki",
+            "Port du serveur FTP", "Sons d'interface", "Souris Joy-Con (droit)", "Quitter Tsuki",
 
             "Doux", "Normal", "Intense", "Serif éditorial", "Sans moderne",
             "Activés", "Muet", "Retour au chargeur", "24 heures", "12 heures (AM/PM)",
@@ -248,7 +249,7 @@ inline const char *tr(int langIdx, Key k) {
             "Language", "Theme (Yoru palette)", "Startup view", "Clock format",
             "Battery percentage", "Glow intensity", "Title typography",
             "Lowercase labels", "Hide Tsuki / hbmenu", "Auto-start FTP",
-            "FTP server port", "UI sounds", "Exit Tsuki",
+            "FTP server port", "UI sounds", "Right Joy-Con mouse", "Exit Tsuki",
 
             "Soft", "Normal", "Intense", "Editorial Serif", "Modern Sans",
             "Enabled", "Muted", "Return to loader", "24-hour", "12-hour (AM/PM)",
@@ -296,7 +297,7 @@ inline const char *tr(int langIdx, Key k) {
             "言語", "テーマ (Yoruパレット)", "起動時の画面", "時計の形式",
             "バッテリー残量 (%)", "グロー強度", "見出しフォント",
             "小文字スタイル (英字)", "Tsuki / hbmenu を非表示", "起動時にFTPを自動開始",
-            "FTPポート番号", "UI効果音", "Tsukiを終了",
+            "FTPポート番号", "UI効果音", "右Joy-Conマウス", "Tsukiを終了",
 
             "弱め", "標準", "強め", "セリフ体", "モダンサンセリフ",
             "オン", "ミュート", "ローダーへ戻る", "24時間表示", "12時間表示 (AM/PM)",
@@ -344,7 +345,7 @@ inline const char *tr(int langIdx, Key k) {
             "Idioma", "Tema (paleta Yoru)", "Vista inicial", "Formato de reloj",
             "Porcentaje de batería", "Intensidad de brillo", "Estilo de títulos",
             "Etiquetas en minúsculas", "Ocultar Tsuki / hbmenu", "Iniciar FTP al abrir",
-            "Puerto del servidor FTP", "Sonidos de interfaz", "Salir de Tsuki",
+            "Puerto del servidor FTP", "Sonidos de interfaz", "Ratón Joy-Con (derecho)", "Salir de Tsuki",
 
             "Suave", "Normal", "Intenso", "Serif editorial", "Sans moderno",
             "Activados", "Silencio", "Volver al cargador", "24 horas", "12 horas (AM/PM)",
@@ -392,7 +393,7 @@ inline const char *tr(int langIdx, Key k) {
             "Sprache", "Theme (Yoru-Palette)", "Startansicht", "Uhrzeitformat",
             "Akku-Prozentanzeige", "Glow-Intensität", "Titel-Schriftart",
             "Kleinschreibung", "Tsuki / hbmenu ausblenden", "FTP beim Start öffnen",
-            "FTP-Server-Port", "UI-Sounds", "Tsuki beenden",
+            "FTP-Server-Port", "UI-Sounds", "Rechter Joy-Con-Mausmodus", "Tsuki beenden",
 
             "Sanft", "Normal", "Intensiv", "Editorial Serif", "Modern Sans",
             "Ein", "Stumm", "Zurück zum Loader", "24 Stunden", "12 Stunden (AM/PM)",

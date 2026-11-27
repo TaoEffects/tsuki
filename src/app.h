@@ -58,6 +58,7 @@ public:
     // Home horizontal rail scroll
     float railScrollX = 0.0f;
     float railVelX = 0.0f;
+    bool railManualScroll = false;
     bool railDragging = false;
     float railDragLastX = 0.0f;
     float railDragAccum = 0.0f;
@@ -65,6 +66,7 @@ public:
     // Android-style App Drawer vertical scroll
     float drawerScrollY = 0.0f;
     float drawerVelY = 0.0f;
+    bool drawerManualScroll = false;
     bool drawerDragging = false;
     float drawerDragLastY = 0.0f;
     float drawerDragAccum = 0.0f;

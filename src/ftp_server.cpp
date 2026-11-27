@@ -9,12 +9,14 @@
 #include <sys/select.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
+#include <sys/time.h>
 #include <unistd.h>
 
 #include <algorithm>
 #include <atomic>
 #include <cctype>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <ctime>
 #include <deque>
@@ -23,6 +25,8 @@
 
 namespace ftp {
 namespace {
+
+constexpr int kMaxClients = 8;
 
 std::atomic<bool> g_running{false};
 std::atomic<int> g_clients{0};
@@ -56,8 +60,28 @@ void markDirty(const std::string &path) {
     g_libDirty.store(true, std::memory_order_release);
 }
 
+std::string trim(const std::string &s) {
+    size_t a = 0;
+    while (a < s.size() && (s[a] == ' ' || s[a] == '\t')) ++a;
+    size_t b = s.size();
+    while (b > a && (s[b - 1] == ' ' || s[b - 1] == '\t' || s[b - 1] == '\r' || s[b - 1] == '\n')) --b;
+    return s.substr(a, b - a);
+}
+
+// Strip leading Unix flags like "-la", "-a", "-l" from LIST/NLST arguments
+std::string stripListFlags(const std::string &arg) {
+    std::string s = trim(arg);
+    while (!s.empty() && s[0] == '-') {
+        size_t sp = s.find(' ');
+        if (sp == std::string::npos) return "";
+        s = trim(s.substr(sp + 1));
+    }
+    return s;
+}
+
 std::string normalizeRel(const std::string &cwd, const std::string &arg) {
-    std::string combined = (!arg.empty() && arg[0] == '/') ? arg : (cwd == "/" ? ("/" + arg) : (cwd + "/" + arg));
+    if (arg.empty()) return cwd.empty() ? "/" : cwd;
+    std::string combined = (arg[0] == '/') ? arg : (cwd == "/" ? ("/" + arg) : (cwd + "/" + arg));
     std::vector<std::string> parts;
     size_t i = 0;
     while (i < combined.size()) {
@@ -66,8 +90,11 @@ std::string normalizeRel(const std::string &cwd, const std::string &arg) {
         while (j < combined.size() && combined[j] != '/') ++j;
         if (j > i) {
             std::string tok = combined.substr(i, j - i);
-            if (tok == "..") { if (!parts.empty()) parts.pop_back(); }
-            else if (tok != ".") parts.push_back(tok);
+            if (tok == "..") {
+                if (!parts.empty()) parts.pop_back();
+            } else if (tok != ".") {
+                parts.push_back(tok);
+            }
         }
         i = j;
     }
@@ -83,26 +110,138 @@ std::string toSdmc(const std::string &rel) {
     return "sdmc:/" + rel;
 }
 
-void sendLine(int fd, const std::string &line) {
-    std::string s = line + "\r\n";
-    send(fd, s.data(), s.size(), 0);
+bool sendAll(int fd, const void *data, size_t len) {
+    const char *p = static_cast<const char *>(data);
+    while (len > 0) {
+        ssize_t n = send(fd, p, len, 0);
+        if (n <= 0) {
+            if (n < 0 && errno == EINTR) continue;
+            return false;
+        }
+        p += n;
+        len -= static_cast<size_t>(n);
+    }
+    return true;
 }
 
-int acceptData(int pasvFd) {
-    if (pasvFd < 0) return -1;
-    fd_set rfds;
-    FD_ZERO(&rfds);
-    FD_SET(pasvFd, &rfds);
-    struct timeval tv{8, 0};
-    if (select(pasvFd + 1, &rfds, nullptr, nullptr, &tv) <= 0) return -1;
-    return accept(pasvFd, nullptr, nullptr);
+void sendLine(int fd, const std::string &line) {
+    std::string s = line + "\r\n";
+    sendAll(fd, s.data(), s.size());
 }
+
+std::string formatMdtm(time_t t) {
+    struct tm gt{};
+    gmtime_r(&t, &gt);
+    char buf[32];
+    std::snprintf(buf, sizeof(buf), "%04d%02d%02d%02d%02d%02d",
+                  gt.tm_year + 1900, gt.tm_mon + 1, gt.tm_mday,
+                  gt.tm_hour, gt.tm_min, gt.tm_sec);
+    return buf;
+}
+
+std::string formatListLine(const std::string &name, const struct stat &st) {
+    static const char *kMonths[12] = {
+        "Jan", "Feb", "Mar", "Apr", "May", "Jun",
+        "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"
+    };
+    bool isDir = S_ISDIR(st.st_mode);
+    uint64_t sz = isDir ? 0 : static_cast<uint64_t>(st.st_size);
+    struct tm lt{};
+    time_t mt = st.st_mtime;
+    localtime_r(&mt, &lt);
+    int mon = std::clamp(lt.tm_mon, 0, 11);
+    char entry[640];
+    std::snprintf(entry, sizeof(entry), "%crwxrwxrwx 1 switch switch %12llu %s %02d %02d:%02d %s\r\n",
+                  isDir ? 'd' : '-',
+                  static_cast<unsigned long long>(sz),
+                  kMonths[mon], lt.tm_mday, lt.tm_hour, lt.tm_min,
+                  name.c_str());
+    return entry;
+}
+
+std::string formatMlsEntry(const std::string &name, const struct stat &st, bool isDirOverride = false) {
+    bool isDir = isDirOverride || S_ISDIR(st.st_mode);
+    uint64_t sz = isDir ? 0 : static_cast<uint64_t>(st.st_size);
+    std::string mod = formatMdtm(st.st_mtime);
+    char entry[640];
+    if (isDir) {
+        std::snprintf(entry, sizeof(entry), "type=dir;modify=%s;perm=elcmp; %s\r\n",
+                      mod.c_str(), name.c_str());
+    } else {
+        std::snprintf(entry, sizeof(entry), "type=file;size=%llu;modify=%s;perm=adfrw; %s\r\n",
+                      static_cast<unsigned long long>(sz), mod.c_str(), name.c_str());
+    }
+    return entry;
+}
+
+struct DataChannel {
+    int pasvFd = -1;
+    bool hasPort = false;
+    struct sockaddr_in portAddr{};
+
+    void reset() {
+        if (pasvFd >= 0) {
+            close(pasvFd);
+            pasvFd = -1;
+        }
+        hasPort = false;
+    }
+
+    int openPassive(int cfd, uint32_t &outIp, uint16_t &outPort) {
+        reset();
+        pasvFd = socket(AF_INET, SOCK_STREAM, 0);
+        if (pasvFd < 0) return -1;
+        int one = 1;
+        setsockopt(pasvFd, SOL_SOCKET, SO_REUSEADDR, &one, sizeof(one));
+        struct sockaddr_in daddr{};
+        daddr.sin_family = AF_INET;
+        daddr.sin_addr.s_addr = INADDR_ANY;
+        daddr.sin_port = 0;
+        if (bind(pasvFd, reinterpret_cast<struct sockaddr *>(&daddr), sizeof(daddr)) < 0 ||
+            listen(pasvFd, 2) < 0) {
+            reset();
+            return -1;
+        }
+        struct sockaddr_in local{}, bound{};
+        socklen_t ll = sizeof(local), bl = sizeof(bound);
+        getsockname(cfd, reinterpret_cast<struct sockaddr *>(&local), &ll);
+        getsockname(pasvFd, reinterpret_cast<struct sockaddr *>(&bound), &bl);
+        outIp = ntohl(local.sin_addr.s_addr);
+        outPort = ntohs(bound.sin_port);
+        return 0;
+    }
+
+    int connectData() {
+        int dfd = -1;
+        if (pasvFd >= 0) {
+            fd_set rfds;
+            FD_ZERO(&rfds);
+            FD_SET(pasvFd, &rfds);
+            struct timeval tv{10, 0};
+            if (select(pasvFd + 1, &rfds, nullptr, nullptr, &tv) > 0) {
+                dfd = accept(pasvFd, nullptr, nullptr);
+            }
+            reset();
+        } else if (hasPort) {
+            dfd = socket(AF_INET, SOCK_STREAM, 0);
+            if (dfd >= 0) {
+                if (connect(dfd, reinterpret_cast<struct sockaddr *>(&portAddr), sizeof(portAddr)) < 0) {
+                    close(dfd);
+                    dfd = -1;
+                }
+            }
+            hasPort = false;
+        }
+        return dfd;
+    }
+};
 
 void handleClient(int cfd) {
     g_clients.fetch_add(1, std::memory_order_relaxed);
     std::string cwd = "/";
     std::string renameFrom;
-    int pasvFd = -1;
+    uint64_t restOffset = 0;
+    DataChannel data;
 
     sendLine(cfd, "220 Tsuki Switch 2 FTP Ready");
 
@@ -140,15 +279,40 @@ void handleClient(int cfd) {
 
             if (cmd == "USER") {
                 sendLine(cfd, "331 Anonymous login ok");
-            } else if (cmd == "PASS") {
+            } else if (cmd == "PASS" || cmd == "ACCT") {
                 sendLine(cfd, "230 Logged in");
-                addLog("Client connecté");
+                addLog("Client connecté (" + std::to_string(g_clients.load()) + ")");
             } else if (cmd == "SYST") {
                 sendLine(cfd, "215 UNIX Type: L8");
             } else if (cmd == "FEAT") {
-                sendLine(cfd, "211-Features:\r\n UTF8\r\n SIZE\r\n PASV\r\n211 End");
-            } else if (cmd == "OPTS" || cmd == "NOOP" || cmd == "TYPE") {
+                sendLine(cfd,
+                         "211-Features:\r\n"
+                         " UTF8\r\n"
+                         " SIZE\r\n"
+                         " MDTM\r\n"
+                         " MFMT\r\n"
+                         " MLST type*;size*;modify*;perm*;\r\n"
+                         " MLSD\r\n"
+                         " REST STREAM\r\n"
+                         " PASV\r\n"
+                         " EPSV\r\n"
+                         " TVFS\r\n"
+                         "211 End");
+            } else if (cmd == "OPTS" || cmd == "NOOP" || cmd == "TYPE" || cmd == "MODE" ||
+                       cmd == "STRU" || cmd == "ALLO" || cmd == "CLNT") {
                 sendLine(cfd, "200 OK");
+            } else if (cmd == "ABOR") {
+                data.reset();
+                restOffset = 0;
+                sendLine(cfd, "226 Abort successful");
+            } else if (cmd == "REIN") {
+                cwd = "/";
+                renameFrom.clear();
+                restOffset = 0;
+                data.reset();
+                sendLine(cfd, "220 Service ready for new user");
+            } else if (cmd == "HELP") {
+                sendLine(cfd, "214 Tsuki FTP: USER PASS SYST FEAT OPTS PWD CWD CDUP PASV EPSV PORT LIST NLST MLSD MLST SIZE MDTM MFMT REST RETR STOR APPE DELE MKD RMD RNFR RNTO STAT ABOR QUIT");
             } else if (cmd == "PWD" || cmd == "XPWD") {
                 sendLine(cfd, "257 \"" + cwd + "\"");
             } else if (cmd == "CWD" || cmd == "XCWD") {
@@ -164,63 +328,119 @@ void handleClient(int cfd) {
                 cwd = normalizeRel(cwd, "..");
                 sendLine(cfd, "250 OK");
             } else if (cmd == "PASV") {
-                if (pasvFd >= 0) { close(pasvFd); pasvFd = -1; }
-                pasvFd = socket(AF_INET, SOCK_STREAM, 0);
-                if (pasvFd < 0) { sendLine(cfd, "425 Cannot open passive socket"); continue; }
-                int one = 1;
-                setsockopt(pasvFd, SOL_SOCKET, SO_REUSEADDR, &one, sizeof(one));
-                struct sockaddr_in daddr{};
-                daddr.sin_family = AF_INET;
-                daddr.sin_addr.s_addr = INADDR_ANY;
-                daddr.sin_port = 0;
-                if (bind(pasvFd, reinterpret_cast<struct sockaddr *>(&daddr), sizeof(daddr)) < 0 ||
-                    listen(pasvFd, 1) < 0) {
-                    close(pasvFd); pasvFd = -1;
-                    sendLine(cfd, "425 Passive bind failed");
+                uint32_t ip = 0;
+                uint16_t dp = 0;
+                if (data.openPassive(cfd, ip, dp) < 0) {
+                    sendLine(cfd, "425 Cannot open passive socket");
                     continue;
                 }
-                struct sockaddr_in local{}, bound{};
-                socklen_t ll = sizeof(local), bl = sizeof(bound);
-                getsockname(cfd, reinterpret_cast<struct sockaddr *>(&local), &ll);
-                getsockname(pasvFd, reinterpret_cast<struct sockaddr *>(&bound), &bl);
-                uint32_t ip = ntohl(local.sin_addr.s_addr);
-                uint16_t dp = ntohs(bound.sin_port);
                 char resp[128];
                 std::snprintf(resp, sizeof(resp), "227 Entering Passive Mode (%u,%u,%u,%u,%u,%u)",
                               (ip >> 24) & 0xFF, (ip >> 16) & 0xFF, (ip >> 8) & 0xFF, ip & 0xFF,
                               (dp >> 8) & 0xFF, dp & 0xFF);
                 sendLine(cfd, resp);
-            } else if (cmd == "LIST" || cmd == "NLST") {
-                int dfd = acceptData(pasvFd);
-                if (pasvFd >= 0) { close(pasvFd); pasvFd = -1; }
-                if (dfd < 0) { sendLine(cfd, "425 Data connection failed"); continue; }
+            } else if (cmd == "EPSV") {
+                uint32_t ip = 0;
+                uint16_t dp = 0;
+                if (data.openPassive(cfd, ip, dp) < 0) {
+                    sendLine(cfd, "425 Cannot open extended passive socket");
+                    continue;
+                }
+                char resp[96];
+                std::snprintf(resp, sizeof(resp), "229 Entering Extended Passive Mode (|||%u|)", dp);
+                sendLine(cfd, resp);
+            } else if (cmd == "PORT") {
+                unsigned h1 = 0, h2 = 0, h3 = 0, h4 = 0, p1 = 0, p2 = 0;
+                if (std::sscanf(arg.c_str(), "%u,%u,%u,%u,%u,%u", &h1, &h2, &h3, &h4, &p1, &p2) == 6) {
+                    data.reset();
+                    data.portAddr = {};
+                    data.portAddr.sin_family = AF_INET;
+                    uint32_t ip = ((h1 & 0xFF) << 24) | ((h2 & 0xFF) << 16) | ((h3 & 0xFF) << 8) | (h4 & 0xFF);
+                    data.portAddr.sin_addr.s_addr = htonl(ip);
+                    data.portAddr.sin_port = htons(static_cast<uint16_t>(((p1 & 0xFF) << 8) | (p2 & 0xFF)));
+                    data.hasPort = true;
+                    sendLine(cfd, "200 PORT command successful");
+                } else {
+                    sendLine(cfd, "501 Invalid PORT syntax");
+                }
+            } else if (cmd == "REST") {
+                char *endp = nullptr;
+                unsigned long long off = std::strtoull(arg.c_str(), &endp, 10);
+                if (endp != arg.c_str()) {
+                    restOffset = static_cast<uint64_t>(off);
+                    sendLine(cfd, "350 Restarting at " + std::to_string(restOffset));
+                } else {
+                    sendLine(cfd, "501 Invalid REST offset");
+                }
+            } else if (cmd == "LIST" || cmd == "NLST" || cmd == "MLSD") {
+                restOffset = 0;
+                int dfd = data.connectData();
+                if (dfd < 0) {
+                    sendLine(cfd, "425 Data connection failed");
+                    continue;
+                }
                 sendLine(cfd, "150 Opening data connection");
-                std::string target = (!arg.empty() && arg[0] != '-') ? normalizeRel(cwd, arg) : cwd;
-                DIR *d = opendir(toSdmc(target).c_str());
-                if (d) {
-                    while (struct dirent *de = readdir(d)) {
-                        if (std::strcmp(de->d_name, ".") == 0 || std::strcmp(de->d_name, "..") == 0) continue;
-                        std::string full = toSdmc(normalizeRel(target, de->d_name));
-                        struct stat st{};
-                        bool isDir = false;
-                        uint64_t sz = 0;
-                        if (stat(full.c_str(), &st) == 0) {
-                            isDir = S_ISDIR(st.st_mode);
-                            sz = isDir ? 0 : static_cast<uint64_t>(st.st_size);
+                std::string cleanArg = (cmd == "MLSD") ? trim(arg) : stripListFlags(arg);
+                std::string target = cleanArg.empty() ? cwd : normalizeRel(cwd, cleanArg);
+                std::string sdmcTarget = toSdmc(target);
+
+                struct stat tst{};
+                if (target != "/" && stat(sdmcTarget.c_str(), &tst) == 0 && !S_ISDIR(tst.st_mode)) {
+                    // Single-file LIST / NLST / MLSD
+                    size_t sl = target.rfind('/');
+                    std::string base = (sl == std::string::npos) ? target : target.substr(sl + 1);
+                    std::string out;
+                    if (cmd == "NLST") out = base + "\r\n";
+                    else if (cmd == "MLSD") out = formatMlsEntry(base, tst);
+                    else out = formatListLine(base, tst);
+                    sendAll(dfd, out.data(), out.size());
+                } else {
+                    DIR *d = opendir(sdmcTarget.c_str());
+                    if (d) {
+                        while (struct dirent *de = readdir(d)) {
+                            if (std::strcmp(de->d_name, ".") == 0 || std::strcmp(de->d_name, "..") == 0) continue;
+                            std::string full = toSdmc(normalizeRel(target, de->d_name));
+                            struct stat st{};
+                            if (stat(full.c_str(), &st) != 0) {
+                                st = {};
+                                if (de->d_type == DT_DIR) st.st_mode = S_IFDIR;
+                            }
+                            std::string out;
+                            if (cmd == "NLST") out = std::string(de->d_name) + "\r\n";
+                            else if (cmd == "MLSD") out = formatMlsEntry(de->d_name, st);
+                            else out = formatListLine(de->d_name, st);
+                            if (!sendAll(dfd, out.data(), out.size())) break;
                         }
-                        char entry[512];
-                        if (cmd == "NLST") {
-                            std::snprintf(entry, sizeof(entry), "%s\r\n", de->d_name);
-                        } else {
-                            std::snprintf(entry, sizeof(entry), "%crwxrwxrwx 1 switch switch %12llu Jan 01 00:00 %s\r\n",
-                                          isDir ? 'd' : '-', static_cast<unsigned long long>(sz), de->d_name);
-                        }
-                        send(dfd, entry, std::strlen(entry), 0);
+                        closedir(d);
                     }
-                    closedir(d);
                 }
                 close(dfd);
                 sendLine(cfd, "226 Transfer complete");
+            } else if (cmd == "MLST") {
+                std::string target = trim(arg).empty() ? cwd : normalizeRel(cwd, trim(arg));
+                struct stat st{};
+                if (target == "/") {
+                    st.st_mode = S_IFDIR;
+                    st.st_mtime = time(nullptr);
+                    sendLine(cfd, "250-Listing /\r\n " + formatMlsEntry("/", st, true) + "250 End");
+                } else if (stat(toSdmc(target).c_str(), &st) == 0) {
+                    sendLine(cfd, "250-Listing " + target + "\r\n " + formatMlsEntry(target, st) + "250 End");
+                } else {
+                    sendLine(cfd, "550 Not found");
+                }
+            } else if (cmd == "STAT") {
+                std::string cleanArg = stripListFlags(arg);
+                if (cleanArg.empty()) {
+                    sendLine(cfd, "211 Tsuki FTP Server ready (" + std::to_string(g_clients.load()) + " clients)");
+                } else {
+                    std::string target = normalizeRel(cwd, cleanArg);
+                    struct stat st{};
+                    if (stat(toSdmc(target).c_str(), &st) == 0) {
+                        sendLine(cfd, "213-Status of " + target + "\r\n " + formatListLine(target, st) + "213 End");
+                    } else {
+                        sendLine(cfd, "550 Not found");
+                    }
+                }
             } else if (cmd == "SIZE") {
                 std::string full = toSdmc(normalizeRel(cwd, arg));
                 struct stat st{};
@@ -229,11 +449,45 @@ void handleClient(int cfd) {
                 } else {
                     sendLine(cfd, "550 Not found");
                 }
+            } else if (cmd == "MDTM") {
+                std::string full = toSdmc(normalizeRel(cwd, arg));
+                struct stat st{};
+                if (stat(full.c_str(), &st) == 0) {
+                    sendLine(cfd, "213 " + formatMdtm(st.st_mtime));
+                } else {
+                    sendLine(cfd, "550 Not found");
+                }
+            } else if (cmd == "MFMT") {
+                size_t sp2 = arg.find(' ');
+                if (sp2 != std::string::npos && sp2 >= 14) {
+                    std::string ts = arg.substr(0, 14);
+                    std::string rel = normalizeRel(cwd, trim(arg.substr(sp2 + 1)));
+                    struct tm tmVal{};
+                    if (std::sscanf(ts.c_str(), "%4d%2d%2d%2d%2d%2d",
+                                    &tmVal.tm_year, &tmVal.tm_mon, &tmVal.tm_mday,
+                                    &tmVal.tm_hour, &tmVal.tm_min, &tmVal.tm_sec) == 6) {
+                        tmVal.tm_year -= 1900;
+                        tmVal.tm_mon -= 1;
+                        time_t mt = mktime(&tmVal);
+                        struct timeval times[2]{{mt, 0}, {mt, 0}};
+                        if (utimes(toSdmc(rel).c_str(), times) == 0) {
+                            sendLine(cfd, "213 Modify=" + ts + "; " + rel);
+                            continue;
+                        }
+                    }
+                }
+                sendLine(cfd, "550 MFMT failed");
             } else if (cmd == "RETR") {
                 std::string rel = normalizeRel(cwd, arg);
                 FILE *fp = std::fopen(toSdmc(rel).c_str(), "rb");
-                int dfd = acceptData(pasvFd);
-                if (pasvFd >= 0) { close(pasvFd); pasvFd = -1; }
+                if (fp && restOffset > 0) {
+                    if (fseeko(fp, static_cast<off_t>(restOffset), SEEK_SET) != 0) {
+                        std::fclose(fp);
+                        fp = nullptr;
+                    }
+                }
+                restOffset = 0;
+                int dfd = data.connectData();
                 if (!fp || dfd < 0) {
                     if (fp) std::fclose(fp);
                     if (dfd >= 0) close(dfd);
@@ -243,19 +497,35 @@ void handleClient(int cfd) {
                 sendLine(cfd, "150 Sending file");
                 std::vector<char> io(65536);
                 size_t r;
+                bool ok = true;
                 while ((r = std::fread(io.data(), 1, io.size(), fp)) > 0) {
-                    send(dfd, io.data(), r, 0);
+                    if (!sendAll(dfd, io.data(), r)) {
+                        ok = false;
+                        break;
+                    }
                     g_bytes.fetch_add(r, std::memory_order_relaxed);
                 }
                 std::fclose(fp);
                 close(dfd);
-                sendLine(cfd, "226 Transfer complete");
-            } else if (cmd == "STOR") {
+                sendLine(cfd, ok ? "226 Transfer complete" : "426 Connection closed; transfer aborted");
+            } else if (cmd == "STOR" || cmd == "APPE") {
                 std::string rel = normalizeRel(cwd, arg);
                 std::string full = toSdmc(rel);
-                FILE *fp = std::fopen(full.c_str(), "wb");
-                int dfd = acceptData(pasvFd);
-                if (pasvFd >= 0) { close(pasvFd); pasvFd = -1; }
+                FILE *fp = nullptr;
+                if (cmd == "APPE") {
+                    fp = std::fopen(full.c_str(), "ab");
+                } else if (restOffset > 0) {
+                    fp = std::fopen(full.c_str(), "r+b");
+                    if (!fp) fp = std::fopen(full.c_str(), "wb");
+                    if (fp && fseeko(fp, static_cast<off_t>(restOffset), SEEK_SET) != 0) {
+                        std::fclose(fp);
+                        fp = nullptr;
+                    }
+                } else {
+                    fp = std::fopen(full.c_str(), "wb");
+                }
+                restOffset = 0;
+                int dfd = data.connectData();
                 if (!fp || dfd < 0) {
                     if (fp) std::fclose(fp);
                     if (dfd >= 0) close(dfd);
@@ -266,15 +536,19 @@ void handleClient(int cfd) {
                 std::vector<char> io(65536);
                 ssize_t r;
                 uint64_t total = 0;
+                bool writeOk = true;
                 while ((r = recv(dfd, io.data(), io.size(), 0)) > 0) {
-                    std::fwrite(io.data(), 1, static_cast<size_t>(r), fp);
+                    if (std::fwrite(io.data(), 1, static_cast<size_t>(r), fp) != static_cast<size_t>(r)) {
+                        writeOk = false;
+                        break;
+                    }
                     total += static_cast<uint64_t>(r);
                     g_bytes.fetch_add(static_cast<uint64_t>(r), std::memory_order_relaxed);
                 }
                 std::fclose(fp);
                 close(dfd);
-                sendLine(cfd, "226 Transfer complete");
-                addLog("STOR " + rel + " (" + std::to_string(total / 1024) + " Ko)");
+                sendLine(cfd, writeOk ? "226 Transfer complete" : "451 Local write error");
+                addLog(cmd + " " + rel + " (" + std::to_string(total / 1024) + " Ko)");
                 if (rel.rfind("/switch", 0) == 0 && rel.find(".tmp") == std::string::npos) markDirty(rel);
             } else if (cmd == "DELE") {
                 std::string rel = normalizeRel(cwd, arg);
@@ -297,8 +571,15 @@ void handleClient(int cfd) {
                 if (rmdir(toSdmc(rel).c_str()) == 0) sendLine(cfd, "250 Removed");
                 else sendLine(cfd, "550 RMD failed");
             } else if (cmd == "RNFR") {
-                renameFrom = normalizeRel(cwd, arg);
-                sendLine(cfd, "350 Ready for RNTO");
+                std::string rel = normalizeRel(cwd, arg);
+                struct stat st{};
+                if (stat(toSdmc(rel).c_str(), &st) == 0) {
+                    renameFrom = rel;
+                    sendLine(cfd, "350 Ready for RNTO");
+                } else {
+                    renameFrom.clear();
+                    sendLine(cfd, "550 File not found");
+                }
             } else if (cmd == "RNTO") {
                 std::string rel = normalizeRel(cwd, arg);
                 if (!renameFrom.empty() && rename(toSdmc(renameFrom).c_str(), toSdmc(rel).c_str()) == 0) {
@@ -318,9 +599,15 @@ void handleClient(int cfd) {
         }
     }
 
-    if (pasvFd >= 0) close(pasvFd);
+    data.reset();
     close(cfd);
     g_clients.fetch_sub(1, std::memory_order_relaxed);
+}
+
+void *clientThreadEntry(void *arg) {
+    int cfd = static_cast<int>(reinterpret_cast<intptr_t>(arg));
+    handleClient(cfd);
+    return nullptr;
 }
 
 void *serverLoop(void *) {
@@ -334,7 +621,21 @@ void *serverLoop(void *) {
         if (r > 0 && FD_ISSET(g_listenFd, &rfds)) {
             int cfd = accept(g_listenFd, nullptr, nullptr);
             if (cfd >= 0) {
-                handleClient(cfd);
+                if (g_clients.load(std::memory_order_relaxed) >= kMaxClients) {
+                    sendLine(cfd, "421 Too many connections");
+                    close(cfd);
+                    continue;
+                }
+                pthread_t ct{};
+                pthread_attr_t attr;
+                pthread_attr_init(&attr);
+                pthread_attr_setdetachstate(&attr, PTHREAD_CREATE_DETACHED);
+                pthread_attr_setstacksize(&attr, 128 * 1024);
+                if (pthread_create(&ct, &attr, clientThreadEntry,
+                                   reinterpret_cast<void *>(static_cast<intptr_t>(cfd))) != 0) {
+                    close(cfd);
+                }
+                pthread_attr_destroy(&attr);
             }
         }
     }
@@ -355,7 +656,7 @@ bool Server::start(uint16_t port) {
     addr.sin_addr.s_addr = INADDR_ANY;
     addr.sin_port = htons(port);
     if (bind(g_listenFd, reinterpret_cast<struct sockaddr *>(&addr), sizeof(addr)) < 0 ||
-        listen(g_listenFd, 4) < 0) {
+        listen(g_listenFd, kMaxClients) < 0) {
         close(g_listenFd);
         g_listenFd = -1;
         return false;

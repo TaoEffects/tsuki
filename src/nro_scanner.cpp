@@ -160,6 +160,7 @@ void loadConfig(Config &cfg) {
         else if (k == "hide_self") cfg.hideSelf = (v == "1");
         else if (k == "ftp_auto") cfg.ftpAutoStart = (v == "1");
         else if (k == "sounds") cfg.soundsEnabled = (v == "1");
+        else if (k == "joycon_mouse") cfg.joyconMouse = (v == "1");
         else if (k == "fav" && !v.empty()) cfg.favorites.insert(v);
         else if (k == "recent") {
             size_t sep = v.find('|');
@@ -187,6 +188,7 @@ void saveConfig(const Config &cfg) {
     f << "hide_self=" << (cfg.hideSelf ? 1 : 0) << "\n";
     f << "ftp_auto=" << (cfg.ftpAutoStart ? 1 : 0) << "\n";
     f << "sounds=" << (cfg.soundsEnabled ? 1 : 0) << "\n";
+    f << "joycon_mouse=" << (cfg.joyconMouse ? 1 : 0) << "\n";
     for (const auto &fav : cfg.favorites) f << "fav=" << fav << "\n";
     for (const auto &kv : cfg.launchTimes) f << "recent=" << kv.first << "|" << kv.second << "\n";
 }

@@ -68,6 +68,8 @@ void audioStop();
 
 bool showKeyboard(const char *header, const std::string &initial, std::string &out, int maxLen = 128);
 bool launchNro(const std::string &path);
+// Enables/disables Right Joy-Con 2 mouse mode (USB mouse stays active; Left Joy-Con is never bound)
+void setJoyconMouseEnabled(bool enabled);
 // Returns pointer to Switch 2's built-in standard shared font TTF (for Japanese / CJK / extended Unicode fallback)
 const uint8_t *systemFontBytes();
 

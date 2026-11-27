@@ -94,6 +94,7 @@ void Browser::navigate(const std::string &path) {
     cursor = 0;
     scrollY = 0.0f;
     scrollVel = 0.0f;
+    manualScroll = false;
     listFade = 0.0f;
     refresh();
 }
@@ -335,16 +336,19 @@ void Browser::update(const plat::Input &in, float dt, int lang,
         return;
     }
     if (!entries.empty()) {
-        if (in.navUp && cursor > 0) { cursor--; sfx::play(sfx::Sound::Move); }
-        if (in.navDown && cursor + 1 < static_cast<int>(entries.size())) { cursor++; sfx::play(sfx::Sound::Move); }
+        if (in.navUp && cursor > 0) { cursor--; manualScroll = false; sfx::play(sfx::Sound::Move); }
+        if (in.navDown && cursor + 1 < static_cast<int>(entries.size())) { cursor++; manualScroll = false; sfx::play(sfx::Sound::Move); }
         if (in.btnA) { openEntry(cursor, onOpenNro, onToast); return; }
         if (in.btnX) { triggerRename(); return; }
         if (in.btnY) { triggerDelete(); return; }
     }
 
-    // Smooth vertical inertial scroll
+    // Smooth vertical inertial scroll (never snaps back when scrolling manually!)
     float maxScroll = std::max(0.0f, static_cast<float>(entries.size()) * kRowH - kListH);
-    if (std::fabs(in.wheelY) > 0.01f) scrollVel -= in.wheelY * 320.0f;
+    if (std::fabs(in.wheelY) > 0.01f) {
+        scrollVel -= in.wheelY * 320.0f;
+        manualScroll = true;
+    }
 
     if (in.leftPressed && gfx::Rect{kListX, kListY, kListW, kListH}.contains(in.mx, in.my)) {
         dragging = true;
@@ -356,6 +360,7 @@ void Browser::update(const plat::Input &in, float dt, int lang,
         dragLastY = in.my;
         dragAccum += std::fabs(dy);
         if (dragAccum > 14.0f) {
+            manualScroll = true;
             scrollY -= dy;
             scrollVel = -dy / std::max(0.004f, dt);
         }
@@ -375,7 +380,7 @@ void Browser::update(const plat::Input &in, float dt, int lang,
         if (std::fabs(scrollVel) > 6.0f) {
             scrollY += scrollVel * dt;
             scrollVel *= std::pow(0.002f, dt);
-        } else if (!entries.empty()) {
+        } else if (!manualScroll && !entries.empty()) {
             float itemTop = cursor * kRowH;
             float itemBot = itemTop + kRowH;
             float target = scrollY;

@@ -102,8 +102,8 @@ constexpr float kDrawerStepX = kDrawerCellW + kDrawerGapX;
 constexpr float kDrawerStepY = kDrawerCellH + kDrawerGapY;
 constexpr float kDrawerViewH = plat::kH - kDrawerY0 - 24.0f;
 
-// Settings list geometry (scrollable 13 rows!)
-constexpr int kSettingsCount = 13;
+// Settings list geometry (scrollable 14 rows!)
+constexpr int kSettingsCount = 14;
 constexpr float kSetListY = 278.0f;
 constexpr float kSetListH = 716.0f;
 constexpr float kSetRowH = 80.0f;
@@ -140,6 +140,7 @@ void App::pushToast(const std::string &title, const std::string &body) {
 void App::init() {
     nro::loadConfig(cfg);
     sfx::setEnabled(cfg.soundsEnabled);
+    plat::setJoyconMouseEnabled(cfg.joyconMouse);
     status = plat::queryStatus();
     nro::scanApps(allApps, cfg);
     rebuildVisible();
@@ -227,6 +228,7 @@ void App::selectHomeIndex(int newVis, bool playSfx) {
         }
         selectedVis = newVis;
         drawerVis = newVis;
+        railManualScroll = false;
         heroAnim = 0.0f;
         if (playSfx) sfx::play(sfx::Sound::Move);
     }
@@ -515,8 +517,8 @@ void App::update(const plat::Input &in, float dt) {
 
         float contentW = static_cast<float>(visibleIdx.size()) * kCardStep - kCardGap;
         float maxScroll = std::max(0.0f, contentW - (plat::kW - kRailPadX * 2.0f));
-        if (std::fabs(in.wheelX) > 0.01f) railVelX += in.wheelX * 520.0f;
-        if (std::fabs(in.wheelY) > 0.01f) railVelX -= in.wheelY * 280.0f;
+        if (std::fabs(in.wheelX) > 0.01f) { railVelX += in.wheelX * 520.0f; railManualScroll = true; }
+        if (std::fabs(in.wheelY) > 0.01f) { railVelX -= in.wheelY * 280.0f; railManualScroll = true; }
 
         if (in.leftPressed && in.my >= kRailY - 20.0f) {
             railDragging = true;
@@ -528,6 +530,7 @@ void App::update(const plat::Input &in, float dt) {
             railDragLastX = in.mx;
             railDragAccum += std::fabs(dx);
             if (railDragAccum > 14.0f) {
+                railManualScroll = true;
                 railScrollX -= dx;
                 railVelX = -dx / std::max(0.004f, dt);
             }
@@ -550,7 +553,7 @@ void App::update(const plat::Input &in, float dt) {
             if (std::fabs(railVelX) > 6.0f) {
                 railScrollX += railVelX * dt;
                 railVelX *= std::pow(0.002f, dt);
-            } else {
+            } else if (!railManualScroll) {
                 float targetCenter = selectedVis * kCardStep - (plat::kW * 0.5f - kRailPadX - kCardW * 0.5f);
                 float targetScroll = std::clamp(targetCenter, 0.0f, maxScroll);
                 railScrollX += (targetScroll - railScrollX) * std::min(1.0f, dt * 10.0f);
@@ -597,10 +600,10 @@ void App::update(const plat::Input &in, float dt) {
     } else if (tab == Tab::Apps) {
         int count = static_cast<int>(visibleIdx.size());
         if (count > 0) {
-            if (in.navLeft && drawerVis > 0) { drawerVis--; sfx::play(sfx::Sound::Move); }
-            if (in.navRight && drawerVis + 1 < count) { drawerVis++; sfx::play(sfx::Sound::Move); }
-            if (in.navUp && drawerVis - kDrawerCols >= 0) { drawerVis -= kDrawerCols; sfx::play(sfx::Sound::Move); }
-            if (in.navDown && drawerVis + kDrawerCols < count) { drawerVis += kDrawerCols; sfx::play(sfx::Sound::Move); }
+            if (in.navLeft && drawerVis > 0) { drawerVis--; drawerManualScroll = false; sfx::play(sfx::Sound::Move); }
+            if (in.navRight && drawerVis + 1 < count) { drawerVis++; drawerManualScroll = false; sfx::play(sfx::Sound::Move); }
+            if (in.navUp && drawerVis - kDrawerCols >= 0) { drawerVis -= kDrawerCols; drawerManualScroll = false; sfx::play(sfx::Sound::Move); }
+            if (in.navDown && drawerVis + kDrawerCols < count) { drawerVis += kDrawerCols; drawerManualScroll = false; sfx::play(sfx::Sound::Move); }
             if (in.btnA) { openDetail(visibleIdx[static_cast<size_t>(drawerVis)]); return; }
             if (in.btnY) { toggleFavoriteApp(visibleIdx[static_cast<size_t>(drawerVis)]); return; }
         }
@@ -646,7 +649,7 @@ void App::update(const plat::Input &in, float dt) {
         float contentH = std::max(0.0f, totalRows * kDrawerStepY - kDrawerGapY + 40.0f);
         float maxScroll = std::max(0.0f, contentH - kDrawerViewH);
 
-        if (std::fabs(in.wheelY) > 0.01f) drawerVelY -= in.wheelY * 340.0f;
+        if (std::fabs(in.wheelY) > 0.01f) { drawerVelY -= in.wheelY * 340.0f; drawerManualScroll = true; }
 
         if (in.leftPressed && in.my >= kDrawerY0) {
             drawerDragging = true;
@@ -658,6 +661,7 @@ void App::update(const plat::Input &in, float dt) {
             drawerDragLastY = in.my;
             drawerDragAccum += std::fabs(dy);
             if (drawerDragAccum > 14.0f) {
+                drawerManualScroll = true;
                 drawerScrollY -= dy;
                 drawerVelY = -dy / std::max(0.004f, dt);
             }
@@ -682,7 +686,7 @@ void App::update(const plat::Input &in, float dt) {
             if (std::fabs(drawerVelY) > 6.0f) {
                 drawerScrollY += drawerVelY * dt;
                 drawerVelY *= std::pow(0.002f, dt);
-            } else if (count > 0) {
+            } else if (!drawerManualScroll && count > 0) {
                 int row = drawerVis / kDrawerCols;
                 float rTop = row * kDrawerStepY;
                 float rBot = rTop + kDrawerCellH;
@@ -755,7 +759,8 @@ void App::update(const plat::Input &in, float dt) {
                 case 9: cfg.ftpAutoStart = !cfg.ftpAutoStart; break;
                 case 10: cycleFtpPort(dir); return;
                 case 11: cfg.soundsEnabled = !cfg.soundsEnabled; sfx::setEnabled(cfg.soundsEnabled); break;
-                case 12: wantExit = true; return;
+                case 12: cfg.joyconMouse = !cfg.joyconMouse; plat::setJoyconMouseEnabled(cfg.joyconMouse); break;
+                case 13: wantExit = true; return;
             }
             nro::saveConfig(cfg);
         };
@@ -1341,6 +1346,7 @@ void App::renderSettingsView(gfx::Renderer &r, const plat::Input &) {
         {fmtKey(i18n::Key::SetFtpAuto), fmtKey(cfg.ftpAutoStart ? i18n::Key::On : i18n::Key::Off)},
         {fmtKey(i18n::Key::SetFtpPort), std::to_string(cfg.ftpPort())},
         {fmtKey(i18n::Key::SetSounds), fmtKey(cfg.soundsEnabled ? i18n::Key::SoundsOn : i18n::Key::SoundsMuted)},
+        {fmtKey(i18n::Key::SetJoyconMouse), fmtKey(cfg.joyconMouse ? i18n::Key::On : i18n::Key::Off)},
         {fmtKey(i18n::Key::SetExit), fmtKey(i18n::Key::ExitDesc), true},
     };
 

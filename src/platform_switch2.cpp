@@ -147,12 +147,10 @@ bool init() {
 
         if (R_SUCCEEDED(hidInitializeNmouse(nullptr, 0, kW, kH, HidNmousePointerType_Default))) {
             g_nmouseInit = true;
-            hidSetMergedNmouseSourceTypes(
-                HidNmouseType_JoyLeft | HidNmouseType_JoyRight | HidNmouseType_StandardMouse);
+            // Default: USB mouse only (Right Joy-Con mouse is opt-in via Settings to avoid button glitches in air)
+            hidSetMergedNmouseSourceTypes(HidNmouseType_StandardMouse);
             HidNmouseButtonConfigJoyRightJcms rcfg{{1, 2, 0, 0, 0, 0, 3, 0}};
-            HidNmouseButtonConfigJoyLeftJcms lcfg{{1, 2, 0, 0, 0, 0, 3, 0}};
             hidSetNmouseButtonConfigJoyRightJcms(&rcfg);
-            hidSetNmouseButtonConfigJoyLeftJcms(&lcfg);
         }
     }
 
@@ -397,6 +395,17 @@ bool launchNro(const std::string &path) {
     if (!envHasNextLoad()) return false;
     std::string argv = "\"" + path + "\"";
     return R_SUCCEEDED(envSetNextLoad(path.c_str(), argv.c_str()));
+}
+
+void setJoyconMouseEnabled(bool enabled) {
+    if (!g_nmouseInit) return;
+    if (enabled) {
+        hidSetMergedNmouseSourceTypes(HidNmouseType_JoyRight | HidNmouseType_StandardMouse);
+    } else {
+        hidSetMergedNmouseSourceTypes(HidNmouseType_StandardMouse);
+        g_pointerVis = false;
+        g_nmouseBtns = 0;
+    }
 }
 
 const uint8_t *systemFontBytes() {
